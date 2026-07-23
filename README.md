@@ -54,6 +54,17 @@ Also add your hosting domain (and `localhost`) under
 **Authentication → Settings → Authorized domains** so the Google sign-in
 popup works.
 
+### Open sign-in to everyone
+
+For *any* Google account to be able to sign in (not just yours), the
+project's OAuth consent screen must be **In production**, not **Testing**.
+In [Google Cloud console](https://console.cloud.google.com) select the same
+project, go to **APIs & Services → OAuth consent screen**, and if the
+publishing status says *Testing*, click **Publish app**. While in Testing
+mode, only the test users you list can sign in — everyone else gets an
+"access blocked" error. (Basic scopes like sign-in don't require Google
+verification, so publishing is instant.)
+
 ## Local development
 
 Requires Node.js 22.
