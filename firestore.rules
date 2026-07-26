@@ -1,81 +1,52 @@
 rules_version = '2';
 
-// Multi-tenant rules for Omnigalactic. Every piece of content lives under
-// sites/{siteId}, and access is gated on the signed-in Google account being
-// a member of that site (or holding a pending invitation to it).
+// Per-account rules for Omnigalactic. Anyone with a Google account can sign
+// in; every account's data lives under users/{uid} and is readable and
+// writable only by that account. There is no shared or cross-account data.
+//
+// Vendors/Purchases attachment metadata (**/files/{fileId}) is written by the
+// /api/files Cloud Function through the Admin SDK, which bypasses these rules;
+// client writes to a files subcollection are denied (no rule grants them) so
+// the function stays the single owner of attachment metadata and its Storage
+// objects. There is deliberately NO recursive wildcard grant here — an
+// allow on /{document=**} would OR together with the files deny and defeat it.
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function signedIn() {
-      return request.auth != null;
+    function isMe(uid) {
+      return request.auth != null && request.auth.uid == uid;
     }
 
-    function myEmail() {
-      return request.auth.token.email.lower();
-    }
+    match /users/{uid} {
+      // The user document itself holds no fields; everything lives in
+      // subcollections.
+      allow read, write: if false;
 
-    function isMember(site) {
-      return signedIn() && request.auth.uid in site.data.memberUids;
-    }
+      // Top-level per-account collections: events, todos, lists, notes,
+      // shoppingItems, people, vendors, purchases, test (connection probe).
+      match /{col}/{docId} {
+        allow read, write: if isMe(uid);
+      }
 
-    function isOwner(site) {
-      return signedIn() && request.auth.uid == site.data.ownerUid;
-    }
+      // Nested subtrees: budgets/household/{categories|subcategories}/{id}
+      // and portfolios/household/{holdings|assetClasses|settings}/{id}.
+      match /budgets/{budgetDoc}/{sub}/{docId} {
+        allow read, write: if isMe(uid);
+      }
+      match /portfolios/{portfolioDoc}/{sub}/{docId} {
+        allow read, write: if isMe(uid);
+      }
 
-    function isInvited(site) {
-      return signedIn()
-        && 'email' in request.auth.token
-        && myEmail() in site.data.invitedEmails;
-    }
-
-    match /sites/{siteId} {
-      // Members see their sites; invitees can see a site's name/owner so
-      // they can decide whether to accept.
-      allow read: if isMember(resource) || isInvited(resource);
-
-      // Anyone with a Google account can create their own fresh site, but
-      // only as its sole owner and first member.
-      allow create: if signedIn()
-        && request.resource.data.ownerUid == request.auth.uid
-        && request.resource.data.ownerEmail == myEmail()
-        && request.resource.data.memberUids == [request.auth.uid]
-        && request.resource.data.memberEmails == [myEmail()]
-        && request.resource.data.invitedEmails == []
-        && request.resource.data.name is string
-        && request.resource.data.name.size() > 0
-        && request.resource.data.name.size() <= 100;
-
-      // Members can rename the site and manage invitations/membership,
-      // but never change who owns it. An invited non-member may perform
-      // exactly one write: adding themselves as a member and clearing
-      // their own invitation.
-      allow update: if
-        (
-          isMember(resource)
-          && request.resource.data.ownerUid == resource.data.ownerUid
-          && request.resource.data.ownerEmail == resource.data.ownerEmail
-          && request.auth.uid in request.resource.data.memberUids
-        ) || (
-          isInvited(resource)
-          && !isMember(resource)
-          && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['memberUids', 'memberEmails', 'invitedEmails'])
-          && request.resource.data.memberUids == resource.data.memberUids.concat([request.auth.uid])
-          && request.resource.data.memberEmails == resource.data.memberEmails.concat([myEmail()])
-          && request.resource.data.invitedEmails == resource.data.invitedEmails.removeAll([myEmail()])
-        );
-
-      // Only the owner may delete a site.
-      allow delete: if isOwner(resource);
-
-      // All site content (tasks, shopping, notes, and any future
-      // collections) is readable and writable by members only.
-      match /{collection}/{docId} {
-        allow read, write: if isMember(get(/databases/$(database)/documents/sites/$(siteId)));
+      // Attachment metadata: owner-readable, written only by /api/files.
+      match /vendors/{vendorId}/files/{fileId} {
+        allow read: if isMe(uid);
+      }
+      match /purchases/{purchaseId}/files/{fileId} {
+        allow read: if isMe(uid);
       }
     }
 
-    // Nothing else is accessible.
+    // Nothing outside users/{uid} is accessible.
     match /{document=**} {
       allow read, write: if false;
     }

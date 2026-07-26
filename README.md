@@ -1,69 +1,16 @@
 # Omnigalactic
 
-A multi-user mission control site. Anyone with a Google account can sign in
-and instantly get their own fresh site — with tasks, a shopping list, and
-notes — and share it with anyone else who has a Google account.
+Personal mission control for anyone with a Google account — calendar, tasks,
+shopping list, notes, budget, investments, and vendors, in an installable
+offline-first PWA. Built with React, Firebase Authentication (Google sign-in),
+Firestore, Cloud Functions, and Firebase Hosting.
 
-Built with React, Vite, Tailwind CSS, Firebase Authentication (Google
-sign-in), and Firestore with an offline-first persistent cache.
+Live site: https://omnigalactic-e668d.web.app
 
-## How sharing works
-
-- Signing in with Google for the first time lands you on the site picker,
-  where you create your own site. You can create as many as you like.
-- On a site's **Members** tab, invite someone by their Google account email.
-- The next time that person signs in to Omnigalactic, the invitation appears
-  on their site picker; accepting it makes them a full member.
-- Members can add and edit everything on the site. Only the owner can remove
-  members or delete the site. Firestore security rules enforce all of this
-  server-side — no one can see a site they aren't a member of or invited to.
-
-## Move this branch into its own repository
-
-This project was built from scratch on an orphan branch (it shares no history
-or content with any other project). To give it its own `Omnigalactic` repo:
-
-1. Create an empty repository named `Omnigalactic` on GitHub (no README).
-2. Then run:
-
-```bash
-git clone --branch claude/omnigalactic-multiuser-site-yqycit \
-  https://github.com/Shaftwell/SmithmanOmingalacticFirebase.git Omnigalactic
-cd Omnigalactic
-git branch -m main
-git remote set-url origin https://github.com/Shaftwell/Omnigalactic.git
-git push -u origin main
-```
-
-## Firebase setup (one time)
-
-1. Create a new Firebase project at <https://console.firebase.google.com>.
-2. **Authentication → Sign-in method**: enable **Google**.
-3. **Firestore Database**: create a database (production mode).
-4. **Project settings → Your apps**: add a Web app and copy its config
-   values into `.env.local` (see `.env.example`).
-5. Deploy the security rules and hosting:
-
-```bash
-npm ci
-npm run build
-npx firebase-tools deploy --only firestore:rules,hosting
-```
-
-Also add your hosting domain (and `localhost`) under
-**Authentication → Settings → Authorized domains** so the Google sign-in
-popup works.
-
-### Open sign-in to everyone
-
-For *any* Google account to be able to sign in (not just yours), the
-project's OAuth consent screen must be **In production**, not **Testing**.
-In [Google Cloud console](https://console.cloud.google.com) select the same
-project, go to **APIs & Services → OAuth consent screen**, and if the
-publishing status says *Testing*, click **Publish app**. While in Testing
-mode, only the test users you list can sign in — everyone else gets an
-"access blocked" error. (Basic scopes like sign-in don't require Google
-verification, so publishing is instant.)
+Sign in with any Google account and you get your own private copy of
+everything. Data lives under `users/{uid}` in Firestore; `firestore.rules`
+lets each account reach only its own subtree, and there is no shared or
+cross-account data.
 
 ## Local development
 
@@ -71,31 +18,90 @@ Requires Node.js 22.
 
 ```bash
 npm ci
-cp .env.example .env.local   # then fill in your Firebase web config
 npm run dev
 ```
 
-The app runs at <http://localhost:3000>.
+The app runs at http://localhost:3000. Firestore features use the browser SDK
+and its persistent offline cache. The Firebase browser configuration in
+`firebase-applet-config.json` identifies the Firebase app and is intentionally
+client-visible.
 
 ## Validation
 
 ```bash
-npm run lint   # TypeScript type-check
-npm run build  # production build
+npm run lint            # TypeScript type-check
+npm test                # vitest unit tests + node --test script tests
+npm run test:rules      # security-rules tests against the Firestore emulator
+npm run test:e2e:offline# Playwright offline PWA tests (auth+firestore emulators)
+npm run build           # production build
+npm run verify:offline  # offline/PWA release checks on the built bundle
 ```
+
+## Production deployment
+
+```bash
+npm run deploy   # builds, then deploys firestore rules + hosting
+```
+
+Deploying the Cloud Functions (`firebase-tools deploy --only functions`)
+requires the project to be on the Blaze plan. The functions back two hosting
+rewrites:
+
+- `/api/quotes` — live stock quotes for the Invest tab (TradingView scanner
+  first, Yahoo Finance fallback, 30 s cache). Signed-in, verified accounts
+  only; per-IP and per-account rate limits.
+- `/api/files` — vendor/purchase attachments (warranties, invoices,
+  receipts). The function owns both the Cloud Storage object under
+  `userFiles/{uid}/…` and the Firestore metadata doc under
+  `users/{uid}/(vendors|purchases)/{id}/files/{fileId}`; clients never touch
+  Storage directly and `storage.rules` denies all direct access. Every path
+  is scoped by the caller's verified uid, so accounts are isolated
+  structurally.
+
+Without the functions deployed, everything else works; Invest falls back to
+manual prices and attachments are unavailable.
 
 ## Data model
 
+Everything belongs to the signed-in account:
+
 ```
-sites/{siteId}
-  name, ownerUid, ownerEmail
-  memberUids[], memberEmails[]   # current members
-  invitedEmails[]                # pending invitations (Google emails)
-  tasks/{id}     # { text, done, createdByEmail, createdAt }
-  shopping/{id}  # { text, done, createdByEmail, createdAt }
-  notes/{id}     # { text (title), body, createdByEmail, createdAt }
+users/{uid}
+  events/{id}            # calendar, with recurrence
+  todos/{id}             # tasks, grouped by person label
+  lists/{id}             # task lists
+  notes/{id}             # markdown notes (graph view)
+  shoppingItems/{id}
+  people/{id}            # user-managed labels for organizing tasks
+  vendors/{id}           # + files/{fileId} metadata (function-owned)
+  purchases/{id}         # + files/{fileId} metadata (function-owned)
+  budgets/household/{categories|subcategories}/{id}
+  portfolios/household/{holdings|assetClasses|settings}/{id}
 ```
 
-`firestore.rules` gates every read and write on membership of the site, and
-allows exactly one write to non-members: an invited user adding themselves
-as a member (accepting the invitation).
+## Offline use
+
+- The app shell, styles, scripts, and icons are cached by the service worker.
+- Firestore uses persistent multi-tab IndexedDB storage with garbage
+  collection disabled, plus a best-effort persistent-storage request.
+- Adds, edits, and deletes are local-first: they update the UI and device
+  cache immediately, then synchronize when connectivity returns.
+- A global status reports **Offline · on device**, queued changes, active
+  sync, or **Synced**; a background listener per collection keeps every tab's
+  cache fresh no matter which tabs are opened.
+- Initial sign-in requires a connection; previously cached data and queued
+  writes do not.
+
+On iPhone, install the site from Safari using **Share → Add to Home Screen**
+and launch it from that icon. Open the app once while online after each
+deployment so the updated service worker and app shell are cached.
+
+## Firebase setup (one time, already done for the live site)
+
+1. Create a Firebase project; enable the **Google** sign-in provider.
+2. Create a Firestore database (production mode) and a default Storage bucket.
+3. Add the web app's config values to `firebase-applet-config.json`.
+4. Add the hosting domain under **Authentication → Authorized domains**.
+5. In Google Cloud console → **Google Auth Platform → Audience**, set the
+   publishing status to **In production** so any Google account can sign in.
+6. `npm run deploy`, and optionally deploy functions on the Blaze plan.

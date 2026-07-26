@@ -1,0 +1,13 @@
+rules_version = '2';
+
+// All Cloud Storage access is brokered by the /api/files Cloud Function using
+// the Admin SDK, which bypasses these rules. Direct client access is denied:
+// the app's family allowlist lives in a NAMED Firestore database, which Storage
+// rules cannot cross-reference, so authorization is enforced in the function.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
